@@ -1,0 +1,250 @@
+---
+title: "GDD Tracking Example"
+author: "Created by Rachel Veenstra"
+date: "Updated 5/4/2021"
+output: html_document
+---
+
+# Setup
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning=F, error=F, message=F)
+```
+
+
+# Loading Packages
+
+```{r}
+library(tidyverse)
+library(rlist)
+library(sp)
+library(geosphere)
+```
+
+
+# Manual Station Input
+
+## Saving Inputs - Manual Station Selection
+
+```{r}
+
+## Location 1 (Keats, KS) ##
+
+KEA <- data.frame(Location = 'KEA',  # Location
+                  Station = 'Manhattan',  # Name of mesonet station
+                  Start = '20210430000000',  # Planting date ###################################
+                  End = paste0(format(Sys.Date(), "%Y%m%d"), '000000'))  # Current date (harvest date)
+
+## Location 2 (Buhler, KS) ##
+
+BUH <- data.frame(Location = 'BUH',  # Location
+                  Station = 'Hutchinson%2010SW',  # Name of mesonet station
+                  Start = '20210503000000', # Planting date #################################
+                  End = paste0(format(Sys.Date(), "%Y%m%d"), '000000'))  # Current date (harvest date)
+
+url_data <- KEA %>% # Binding data into one dataframe
+  rbind(BUH)
+
+url_data
+```
+
+
+## Pulling Data from Mesonet
+
+```{r}
+data <- url_data %>% # Pulling data from Mesonet
+  mutate(url = paste0("http://mesonet.k-state.edu/rest/stationdata/?stn=", `Station`, "&int=day&t_start=", `Start`, "&t_end=", `End`, "&vars=TEMP2MAVG,TEMP2MMIN,TEMP2MMAX,PRECIP"))
+data
+
+## Location 1 (Keats, KS) ##
+
+data.KEA <- read.table(data$url[1], sep=',', header=T) %>% 
+  mutate(Location = 'KEA')
+
+## Location 2 (Buhler, KS) ##
+
+data.BUH <- read.table(data$url[2], sep=',', header=T) %>% 
+  mutate(Location = 'BUH')
+
+
+weather.data <- data.KEA %>% # Binding downloaded data to one dataframe
+  rbind(data.BUH)
+
+weather.data
+```
+
+
+## Calculations
+
+```{r}
+data <- weather.data %>% 
+  mutate(Date = substr(`TIMESTAMP`, 0,10)) %>% 
+  
+  mutate(min = as.numeric(TEMP2MMIN), # changing columns to numeric
+         max = as.numeric(TEMP2MMAX)) %>% 
+  
+  mutate(min.corn = case_when(min <= 10 ~ min,
+                              min >= 30 ~ 30, # maximum temperature for corn growth - 30C
+                              min > 10 & min < 30 ~ min), # growth window (minimum temperature)
+         
+         max.corn = case_when(max <= 10 ~ max,
+                              max >= 30 ~ 30, # maximum temperature for corn growth - 30C
+                              max > 10 & max < 30 ~ max), # growth window (maximum temperature)
+         
+         temp.corn = ((min.corn + max.corn)/2)-10) %>% # average of growth window minus base temperature (10C)
+  
+  mutate(temp.corn = case_when(temp.corn <= 0 ~ 0, # setting negative values to 0
+                               temp.corn > 0 ~ temp.corn)) %>% # maintaining positive values
+  
+  group_by(Location) %>% # separating locations (this case, only one)
+  
+  mutate(CumGDD = cumsum(temp.corn), # adding up accumulated GDD
+         CumPP = cumsum(PRECIP)) %>% # adding up accumulated precipitation
+  
+  ungroup() %>% 
+  
+  select(-c(TEMP2MMIN, TEMP2MMAX, TIMESTAMP, TEMP2MAVG, min.corn, max.corn, temp.corn)) # removing unnecessary columns
+
+data
+```
+
+
+# Automated Station Input
+
+## Saving Inputs - Automated Station Selection
+
+```{r}
+
+## Location Information
+
+GAR.auto <- data.frame(Location = 'Garden City',  # Location
+                              Lat = '37.829', # Location Latitude
+                              Long = '-100.856', # Location Longitude
+                              Start = '20210430000000',  # Planting date ###################################
+                              End = paste0(format(Sys.Date(), "%Y%m%d"), '000000'))  # Current date (harvest date)
+
+GAR.auto
+
+```
+
+
+## Selecting Station Based on Coordinates
+
+``` {r}
+stations <- read.table('http://mesonet.k-state.edu/rest/stationnames/', sep=',', header=T) %>% # Pulling station coordinates
+  dplyr::select(c(NAME, LATITUDE, LONGITUDE)) %>% 
+  mutate(id = seq(1,102))
+stations          
+
+loc <- data.frame(NAME = 'My Location', LATITUDE = as.numeric(GAR.auto$Lat), LONGITUDE = as.numeric(GAR.auto$Long)) # Creating selected station info
+          
+sp.stations <- stations # Creating identical dataframes for spatial objects
+sp.loc <- loc
+          
+coordinates(sp.stations) <- ~LONGITUDE+LATITUDE # Creating coodinate points
+coordinates(sp.loc) <- ~LONGITUDE+LATITUDE
+
+sp.stations
+          
+dist <- data.frame(distHaversine(sp.stations, sp.loc)) %>%  # Calcuating distances from stations to selected point
+  mutate(id = seq(1, 102)) %>% 
+  left_join(stations, by = 'id') %>% # Joining station names with distances
+  rename(dist = 1)
+dist          
+close <- min(dist$dist) # Lowest distance from point
+
+final <- dist %>% # Selecting weather station with lowest distance
+  filter(., dist == close)
+          
+st.name <- final$NAME[1] # Pulling name of weather station
+st.name  
+st.edit <- st.name %>% 
+  str_replace_all(' ', '%20') # Editing weather station name to be url-compatible
+
+st.edit
+```
+
+
+## Pulling Data from Mesonet
+
+``` {r}
+GAR.auto <- GAR.auto %>%  # Pulling data from Mesonet website
+  mutate(url = paste0("http://mesonet.k-state.edu/rest/stationdata/?stn=", st.edit, "&int=day&t_start=", `Start`, "&t_end=", `End`, "&vars=TEMP2MAVG,TEMP2MMIN,TEMP2MMAX,PRECIP"))
+          
+GAR.auto
+auto.data <- read.table(GAR.auto$url, sep=',', header=T) %>% 
+  mutate(Location = 'Garden City')
+
+auto.data
+```
+
+
+## Calculations
+
+``` {r}
+calc.data <- auto.data %>% 
+  mutate(Date = substr(`TIMESTAMP`, 0,10)) %>% 
+  
+  mutate(min = as.numeric(TEMP2MMIN), # changing columns to numeric
+         max = as.numeric(TEMP2MMAX)) %>% 
+  
+  mutate(min.corn = case_when(min <= 10 ~ min,
+                              min >= 30 ~ 30, # maximum temperature for corn growth - 30C
+                              min > 10 & min < 30 ~ min), # growth window (minimum temperature)
+         
+         max.corn = case_when(max <= 10 ~ max,
+                              max >= 30 ~ 30, # maximum temperature for corn growth - 30C
+                              max > 10 & max < 30 ~ max), # growth window (maximum temperature)
+         
+         temp.corn = ((min.corn + max.corn)/2)-10) %>% # average of growth window minus base temperature (10C)
+  
+  mutate(temp.corn = case_when(temp.corn <= 0 ~ 0, # setting negative values to 0
+                               temp.corn > 0 ~ temp.corn)) %>% # maintaining positive values
+  
+  group_by(Location) %>% # separating locations (this case, only one)
+  
+  mutate(CumGDD = cumsum(temp.corn), # adding up accumulated GDD
+         CumPP = cumsum(PRECIP)) %>% # adding up accumulated precipitation
+  
+  ungroup() %>% 
+  
+  select(-c(TEMP2MMIN, TEMP2MMAX, TIMESTAMP, TEMP2MAVG, min.corn, max.corn, temp.corn)) # removing unnecessary columns
+
+calc.data
+```
+
+
+# Plots
+
+## GDD
+
+```{r}
+start <- paste0('2021-', substr(as.character(GAR.auto$Start),1,2),'-', substr(as.character(GAR.auto$Start),4,5))
+
+gdd <- ggplot(data=data)+
+  
+  geom_line(aes(x = as.Date(Date), y = CumGDD, color=Location), size = 2, alpha = 0.75) +
+  geom_point(aes(x=as.Date(Date), y = CumGDD, fill=Location), size = 3, shape = 21, color='black')+
+  
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
+  
+  scale_x_date(breaks = "3 days", date_labels= "%B %d", limits = c(as.Date(start, format = '%Y-%m-%d'), Sys.Date())) +
+  
+  ggtitle('2021 Cumulative Growing Degree Days')+
+  xlab('Date')+
+  ylab('GDD (°C day⁻¹)')+
+  
+  theme(panel.grid = element_line(color='#d9d9d9',size=0.2), 
+        strip.background = element_blank(),
+        panel.background = element_rect(colour = 'black', size = 0.3, fill = 'white'),
+        title = element_text(size=13),
+        axis.text.x = element_text(size = 8, margin = margin(t = 3, r = 0, b = 0, l = 0),angle=45,vjust=1,hjust=1,color = 'black'),
+        axis.text.y = element_text(size = 12, margin = margin(t = 0, r = 5, b = 0, l = 0), color = 'black'),
+        legend.text = element_text(size = 10, color = 'black'), legend.title = element_text(size = 10, color = 'black'),
+        axis.title.y = element_text(size = 13, margin = margin(t = 0, r = 10, b = 0, l = 0), color = 'black'),
+        axis.title.x = element_blank())
+
+gdd
+```
+
